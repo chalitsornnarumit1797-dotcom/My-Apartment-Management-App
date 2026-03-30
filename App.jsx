@@ -51,22 +51,27 @@ export default function App() {
   const [view, setView] = useState('dashboard');
 
   useEffect(() => {
-    signInAnonymously(auth);
-    onAuthStateChanged(auth, setUser);
-  }, []);
+    // แก้ไข: ให้มั่นใจว่า user ล็อกอิน Anonymous สำเร็จก่อน
+    if (!user || !isUnlocked) return; 
 
-  useEffect(() => {
-    if (!user || !isUnlocked) return;
+    // ดึงข้อมูลสถานะห้อง
     const unsubRooms = onSnapshot(collection(db, 'apartments', appId, 'rooms'), (snapshot) => {
-      const data = {}; snapshot.forEach(doc => { data[doc.id] = doc.data(); });
+      const data = {}; 
+      snapshot.forEach(doc => { data[doc.id] = doc.data(); });
       setRoomStates(data);
+      console.log("Sync Rooms Success!");
     });
+
+    // ดึงข้อมูลประวัติ
     const unsubLogs = onSnapshot(collection(db, 'apartments', appId, 'logs'), (snapshot) => {
-      const logs = []; snapshot.forEach(doc => { logs.push({ id: doc.id, ...doc.data() }); });
+      const logs = []; 
+      snapshot.forEach(doc => { logs.push({ id: doc.id, ...doc.data() }); });
       setVisitorLogs(logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+      console.log("Sync Logs Success!");
     });
+
     return () => { unsubRooms(); unsubLogs(); };
-  }, [user, isUnlocked]);
+  }, [user, isUnlocked]); // ใส่ user และ isUnlocked เป็นตัวกระตุ้นให้ดึงข้อมูลใหม่;
 
   const activeProperty = PROPERTIES.find(p => p.id === activePropertyId);
 
