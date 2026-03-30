@@ -5,7 +5,7 @@ import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc } 
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { Building2, X, CheckCircle2, Clock, Tag, ClipboardList, Lock, Unlock, Trash2, Wrench, LogOut, UserCheck, CreditCard, Printer } from 'lucide-react';
 
-// --- 1. Firebase Config (ห้ามแก้ไข) ---
+// --- 1. Firebase Config (ข้อมูลชุดเดิมของคุณ) ---
 const ACCESS_PIN = "933979"; 
 const firebaseConfig = {
   apiKey: "AIzaSyASTtm9rgugCwKhcRC27j5ugJHFWbhM_8k",
@@ -50,35 +50,27 @@ export default function App() {
   const [tempStatus, setTempStatus] = useState(null);
   const [view, setView] = useState('dashboard');
 
-  // 🛡️ 1. พยายาม Login แบบระบุตัวตนทันทีที่เปิดแอป
+  // 🔥 1. ล็อกอิน Firebase ทันทีที่รันแอป
   useEffect(() => {
-    signInAnonymously(auth).catch(err => console.error("Login Error:", err));
-    onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUser(u);
-        console.log("Cloud Connected!");
-      }
-    });
+    signInAnonymously(auth).then(res => setUser(res.user));
   }, []);
 
-  // 🛡️ 2. ดึงข้อมูลจาก Cloud ตลอดเวลา (เพื่อให้ข้อมูล Sync กันระหว่างเครื่อง)
+  // 🔥 2. ดึงข้อมูลจาก Cloud แบบ Real-time ตลอดเวลา
   useEffect(() => {
-    if (!user) return; // ต้องรอให้ Login สำเร็จก่อน
-
-    const unsubRooms = onSnapshot(collection(db, 'apartments', appId, 'rooms'), (snapshot) => {
-      const data = {}; snapshot.forEach(doc => { data[doc.id] = doc.data(); });
+    if (!user) return;
+    const unsubRooms = onSnapshot(collection(db, 'apartments', appId, 'rooms'), (snap) => {
+      const data = {}; snap.forEach(d => { data[d.id] = d.data(); });
       setRoomStates(data);
     });
-    const unsubLogs = onSnapshot(collection(db, 'apartments', appId, 'logs'), (snapshot) => {
-      const logs = []; snapshot.forEach(doc => { logs.push({ id: doc.id, ...doc.data() }); });
-      setVisitorLogs(logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    const unsubLogs = onSnapshot(collection(db, 'apartments', appId, 'logs'), (snap) => {
+      const logs = []; snap.forEach(d => { logs.push({ id: d.id, ...d.data() }); });
+      setVisitorLogs(logs.sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0)));
     });
     return () => { unsubRooms(); unsubLogs(); };
   }, [user]);
 
   const activeProperty = PROPERTIES.find(p => p.id === activePropertyId);
 
-  // คำนวณสถานะห้องตึกปัจจุบัน (โชว์ที่ Dashboard)
   const dashboardStats = useMemo(() => {
     const stats = { available: 0, maintenance: 0, appointment: 0, booked: 0, notice: 0, occupied: 0 };
     if (!activeProperty) return stats;
@@ -91,6 +83,7 @@ export default function App() {
     return stats;
   }, [roomStates, activePropertyId, activeProperty]);
 
+  // 🔥 3. ฟังก์ชันบันทึกข้อมูล (แบบรอผลสำเร็จ)
   const handleUpdate = async (e) => {
     e.preventDefault();
     const formData = new FormData(e.target);
@@ -108,48 +101,43 @@ export default function App() {
       updatedAt: Date.now()
     };
     
-    setSelectedRoom(null); // ปิดหน้าต่างทันที (Optimistic UI)
-
-    // บันทึกลง Cloud (Firestore)
-    try {
-      await setDoc(doc(db, 'apartments', appId, 'rooms', docId), data, { merge: true });
-      if (data.lastVisitor || data.repairNote) {
-        await addDoc(collection(db, 'apartments', appId, 'logs'), {
-          name: data.lastVisitor || "ระบบ", roomNo: selectedRoom, propertyName: activeProperty.name,
-          statusLabel: STATUS_CONFIG[tempStatus].label, createdAt: Date.now()
-        });
-      }
-    } catch (err) {
-      alert("บันทึกลง Cloud ไม่สำเร็จ กรุณาเช็คอินเทอร์เน็ต");
+    // บันทึกสถานะห้อง
+    await setDoc(doc(db, 'apartments', appId, 'rooms', docId), data, { merge: true });
+    
+    // บันทึกประวัติ (ถ้ามีข้อมูลลูกค้าหรือหมายเหตุ)
+    if (data.lastVisitor || data.repairNote || data.lastPhone) {
+      await addDoc(collection(db, 'apartments', appId, 'logs'), {
+        name: data.lastVisitor || "ระบบ",
+        roomNo: selectedRoom,
+        propertyName: activeProperty.name,
+        statusLabel: STATUS_CONFIG[tempStatus].label,
+        createdAt: Date.now()
+      });
     }
+    
+    setSelectedRoom(null); // ปิดหน้าต่างเมื่อบันทึกเสร็จแล้ว
   };
 
-  // ---------------------------------------------------------
-  // 🔒 หน้าจอ PIN (จะเด้งทุกครั้งที่เปิดแอป/รีเฟรช)
-  // ---------------------------------------------------------
   if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-['Prompt']">
-        <form onSubmit={(e) => { e.preventDefault(); if(pinInput === ACCESS_PIN){ setIsUnlocked(true); } else { alert('PIN ไม่ถูกต้อง'); setPinInput(""); } }} className="bg-white p-10 rounded-[3rem] w-full max-w-sm text-center space-y-6 shadow-2xl animate-in zoom-in">
-          <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center mx-auto"><Lock className="text-indigo-600 w-8 h-8"/></div>
-          <h2 className="text-2xl font-black italic">ApartCloud PRO</h2>
-          <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} className="w-full p-4 bg-slate-100 rounded-2xl text-center text-3xl font-bold border-2 border-transparent focus:border-indigo-500 outline-none" placeholder="PIN" autoFocus />
+        <form onSubmit={(e) => { e.preventDefault(); if(pinInput === ACCESS_PIN){ setIsUnlocked(true); } else { alert('PIN ผิด!'); setPinInput(""); } }} className="bg-white p-10 rounded-[3rem] w-full max-w-sm text-center space-y-6 shadow-2xl">
+          <Lock className="text-indigo-600 w-12 h-12 mx-auto"/>
+          <h2 className="text-2xl font-black italic tracking-tighter leading-none">ApartCloud PRO</h2>
+          <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} className="w-full p-4 bg-slate-100 rounded-2xl text-center text-4xl font-bold outline-none border-2 border-transparent focus:border-indigo-500 transition-all" placeholder="PIN" autoFocus />
           <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-lg active:scale-95 transition-all">UNLOCK SYSTEM</button>
         </form>
       </div>
     );
   }
 
-  // ---------------------------------------------------------
-  // 🏠 หน้าจอหลัก (จะเห็นเมื่อปลดล็อก PIN แล้ว)
-  // ---------------------------------------------------------
   return (
     <div className="min-h-screen bg-slate-50 font-['Prompt'] pb-10">
       <nav className="bg-white border-b p-4 sticky top-0 z-40 flex justify-between items-center no-print shadow-sm">
         <div className="font-black text-indigo-600 italic flex items-center gap-2"><Building2 className="w-5 h-5"/> ApartCloud PRO</div>
-        <div className="flex gap-1 font-bold text-[9px]">
+        <div className="flex gap-1">
           {['dashboard', 'summary', 'history'].map(v => (
-            <button key={v} onClick={() => setView(v)} className={`px-3 py-2 rounded-xl transition-all ${view === v ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400'}`}>{v.toUpperCase()}</button>
+            <button key={v} onClick={() => setView(v)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${view === v ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400'}`}>{v}</button>
           ))}
           <button onClick={() => setIsUnlocked(false)} className="p-2 text-slate-300 hover:text-rose-500"><Unlock className="w-4 h-4"/></button>
         </div>
@@ -158,7 +146,6 @@ export default function App() {
       <main className="p-4 max-w-7xl mx-auto space-y-6">
         {view === 'dashboard' ? (
           <>
-            {/* แถบสรุปสถานะแต่ละสีตามตึกที่เลือก */}
             <div className="grid grid-cols-2 md:grid-cols-6 gap-3 no-print">
               {Object.entries(STATUS_CONFIG).map(([k,v]) => (
                 <div key={k} className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
@@ -177,7 +164,7 @@ export default function App() {
             
             {activeProperty?.floors.map(floor => (
               <div key={floor.level} className="space-y-4">
-                <h3 className="font-black text-slate-400 text-xs uppercase tracking-widest pl-2">ชั้น {floor.level}</h3>
+                <h3 className="font-black text-slate-400 text-xs uppercase pl-2 tracking-widest">ชั้น {floor.level}</h3>
                 <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-8 lg:grid-cols-9 gap-3">
                   {floor.rooms.map(roomNo => {
                     const info = roomStates[`${activePropertyId}_${roomNo}`] || { status: 'available' };
@@ -196,7 +183,7 @@ export default function App() {
         ) : view === 'summary' ? (
           <div className="space-y-6 animate-in fade-in">
              <div className="flex justify-between items-center no-print">
-                <h2 className="text-2xl font-black italic text-slate-800 uppercase">All Summary</h2>
+                <h2 className="text-2xl font-black italic text-slate-800 uppercase tracking-tighter">Summary All Units</h2>
                 <button onClick={() => window.print()} className="bg-slate-900 text-white p-3 rounded-2xl shadow-lg"><Printer className="w-4 h-4"/></button>
              </div>
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -209,8 +196,8 @@ export default function App() {
                           <div>
                             <p className="font-black text-slate-800 text-lg">{key.split('_')[1]}</p>
                             <p className="text-[9px] text-slate-400 font-bold uppercase">{PROPERTIES.find(p => p.id === key.split('_')[0])?.name}</p>
-                            {item.deposit && <p className="text-[10px] text-rose-500 font-black mt-2">จอง: ฿{item.deposit}</p>}
-                            {item.balance && <p className="text-[10px] text-emerald-600 font-black">จ่ายวันเข้า: ฿{item.balance}</p>}
+                            {item.deposit && <p className="text-[10px] text-rose-500 font-black mt-2">มัดจำ: ฿{item.deposit}</p>}
+                            {item.balance && <p className="text-[10px] text-emerald-600 font-black">ยอดวันเข้า: ฿{item.balance}</p>}
                           </div>
                           <div className="text-right">
                             <p className="font-black text-sm text-slate-800">{item.lastVisitor || '-'}</p>
@@ -226,11 +213,11 @@ export default function App() {
           </div>
         ) : (
           <div className="bg-white rounded-[2.5rem] shadow-sm border p-8 animate-in fade-in space-y-4">
-            <h2 className="text-xl font-black uppercase flex items-center gap-2 italic text-slate-800"><ClipboardList/> Activity Logs</h2>
-            {visitorLogs.slice(0,100).map(log => (
+            <h2 className="text-xl font-black uppercase flex items-center gap-2 italic text-slate-800"><ClipboardList className="w-5 h-5"/> Activity Logs</h2>
+            {visitorLogs.map(log => (
               <div key={log.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center font-bold border border-slate-100">
                 <div><p className="text-slate-800 text-sm">{log.roomNo} - {log.name}</p><p className="text-[9px] text-slate-400 uppercase font-black">{log.propertyName} • {log.statusLabel}</p></div>
-                <button onClick={() => deleteDoc(doc(db, 'apartments', appId, 'logs', log.id))} className="text-rose-400 p-2 hover:text-rose-600 transition-colors"><Trash2 className="w-4 h-4"/></button>
+                <button onClick={() => deleteDoc(doc(db, 'apartments', appId, 'logs', log.id))} className="text-rose-400 p-2"><Trash2 className="w-4 h-4"/></button>
               </div>
             ))}
           </div>
@@ -239,44 +226,36 @@ export default function App() {
 
       {selectedRoom && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-end sm:items-center justify-center z-50 p-4 no-print">
-          <form onSubmit={handleUpdate} className="bg-white rounded-[3rem] w-full max-w-lg p-8 space-y-6 overflow-y-auto max-h-[90vh] shadow-2xl">
+          <form onSubmit={handleUpdate} className="bg-white rounded-[3rem] w-full max-w-lg p-8 space-y-6 overflow-y-auto max-h-[90vh] shadow-2xl animate-in slide-in-from-bottom duration-300">
             <div className="flex justify-between items-center border-b pb-4">
               <div><p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">{activeProperty?.name}</p><h3 className="text-3xl font-black italic tracking-tighter leading-none">Room {selectedRoom}</h3></div>
               <button type="button" onClick={() => setSelectedRoom(null)} className="p-3 bg-slate-100 rounded-2xl"><X/></button>
             </div>
-            
             <div className="grid grid-cols-3 gap-2">
               {Object.entries(STATUS_CONFIG).map(([k,v]) => (
                 <button type="button" key={k} onClick={() => setTempStatus(k)} className={`p-3 rounded-2xl border-2 text-[9px] font-black uppercase flex flex-col items-center gap-1 transition-all ${tempStatus===k?'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-md':'border-slate-50 text-slate-300'}`}>{v.icon}{v.label}</button>
               ))}
             </div>
-
-            <div className="bg-slate-50 p-6 rounded-[2rem] border space-y-4">
+            <div className="bg-slate-50 p-6 rounded-[2rem] border space-y-4 shadow-inner">
               <input name="customPrice" placeholder="ราคาพิเศษ..." defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.price || ""} className="w-full p-4 rounded-xl font-bold bg-white outline-none border focus:border-indigo-500 shadow-sm" />
               {(tempStatus === 'appointment' || tempStatus === 'booked' || tempStatus === 'occupied') && (
                 <>
-                  <input name="visitorName" placeholder="ชื่อลูกค้า..." defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.lastVisitor || ""} className="w-full p-4 rounded-xl font-bold bg-white outline-none border shadow-sm" />
-                  <input name="visitorPhone" placeholder="เบอร์โทร..." defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.lastPhone || ""} className="w-full p-4 rounded-xl font-bold bg-white outline-none border shadow-sm" />
+                  <input name="visitorName" placeholder="ชื่อลูกค้า..." defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.lastVisitor || ""} className="w-full p-4 rounded-xl font-bold bg-white outline-none border" />
+                  <input name="visitorPhone" placeholder="เบอร์โทร..." defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.lastPhone || ""} className="w-full p-4 rounded-xl font-bold bg-white outline-none border" />
                   <div className="grid grid-cols-2 gap-2">
-                    <input type="date" name="actionDate" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.date || ""} className="p-4 rounded-xl font-bold bg-white outline-none border text-xs shadow-sm" />
-                    <input name="actionTime" placeholder="เวลา (พิมพ์เอง)" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.time || ""} className="p-4 rounded-xl font-bold bg-white outline-none border text-xs shadow-sm" />
+                    <input type="date" name="actionDate" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.date || ""} className="p-4 rounded-xl font-bold bg-white outline-none border text-xs" />
+                    <input name="actionTime" placeholder="เวลา (พิมพ์เอง)" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.time || ""} className="p-4 rounded-xl font-bold bg-white outline-none border text-xs" />
                   </div>
                   {tempStatus === 'booked' && (
                     <div className="grid grid-cols-2 gap-2">
-                       <input name="deposit" placeholder="มัดจำ/จอง" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.deposit || ""} className="p-4 rounded-xl font-black bg-rose-50 text-rose-600 outline-none border border-rose-100 placeholder:text-rose-300 shadow-sm" />
-                       <input name="balance" placeholder="จ่ายวันเข้า" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.balance || ""} className="p-4 rounded-xl font-black bg-emerald-50 text-emerald-600 outline-none border border-emerald-100 placeholder:text-emerald-300 shadow-sm" />
-                    </div>
-                  )}
-                  {(tempStatus !== 'occupied') && (
-                    <div className="bg-indigo-600 p-4 rounded-2xl text-white space-y-1 shadow-lg">
-                      <p className="text-[9px] font-black opacity-70 flex items-center gap-1 uppercase tracking-widest"><CreditCard className="w-3 h-3"/> Bank Account</p>
-                      <p className="text-[11px] font-bold leading-tight">{activeProperty.bankInfo}</p>
+                       <input name="deposit" placeholder="มัดจำ/จอง" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.deposit || ""} className="p-4 rounded-xl font-black bg-rose-50 text-rose-600 outline-none border border-rose-100" />
+                       <input name="balance" placeholder="จ่ายวันเข้า" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.balance || ""} className="p-4 rounded-xl font-black bg-emerald-50 text-emerald-600 outline-none border border-emerald-100" />
                     </div>
                   )}
                 </>
               )}
             </div>
-            <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black text-xl active:scale-95 transition-all shadow-xl">UPDATE CLOUD</button>
+            <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black text-xl shadow-2xl active:scale-95 transition-all">UPDATE CLOUD</button>
           </form>
         </div>
       )}
