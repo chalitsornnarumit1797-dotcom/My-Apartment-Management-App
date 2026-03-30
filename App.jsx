@@ -5,7 +5,7 @@ import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc } 
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { Building2, X, CheckCircle2, Clock, Tag, ClipboardList, Lock, Unlock, Trash2, Wrench, LogOut, UserCheck, CreditCard, Printer } from 'lucide-react';
 
-// --- 1. Firebase Config ---
+// --- 1. Firebase Config (ห้ามแก้ไข) ---
 const ACCESS_PIN = "933979"; 
 const firebaseConfig = {
   apiKey: "AIzaSyASTtm9rgugCwKhcRC27j5ugJHFWbhM_8k",
@@ -50,14 +50,21 @@ export default function App() {
   const [tempStatus, setTempStatus] = useState(null);
   const [view, setView] = useState('dashboard');
 
-  // ⚡ 1. เริ่ม Login ทันที
+  // 🛡️ 1. พยายาม Login แบบระบุตัวตนทันทีที่เปิดแอป
   useEffect(() => {
-    signInAnonymously(auth);
-    onAuthStateChanged(auth, setUser);
+    signInAnonymously(auth).catch(err => console.error("Login Error:", err));
+    onAuthStateChanged(auth, (u) => {
+      if (u) {
+        setUser(u);
+        console.log("Cloud Connected!");
+      }
+    });
   }, []);
 
-  // ⚡ 2. ดึงข้อมูลจาก Cloud ทันที (ไม่รอ PIN) เพื่อให้ข้อมูลพร้อมเสมอ
+  // 🛡️ 2. ดึงข้อมูลจาก Cloud ตลอดเวลา (เพื่อให้ข้อมูล Sync กันระหว่างเครื่อง)
   useEffect(() => {
+    if (!user) return; // ต้องรอให้ Login สำเร็จก่อน
+
     const unsubRooms = onSnapshot(collection(db, 'apartments', appId, 'rooms'), (snapshot) => {
       const data = {}; snapshot.forEach(doc => { data[doc.id] = doc.data(); });
       setRoomStates(data);
@@ -67,11 +74,11 @@ export default function App() {
       setVisitorLogs(logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
     });
     return () => { unsubRooms(); unsubLogs(); };
-  }, []);
+  }, [user]);
 
   const activeProperty = PROPERTIES.find(p => p.id === activePropertyId);
 
-  // คำนวณสรุปสถานะ Dashboard สำหรับตึกปัจจุบัน
+  // คำนวณสถานะห้องตึกปัจจุบัน (โชว์ที่ Dashboard)
   const dashboardStats = useMemo(() => {
     const stats = { available: 0, maintenance: 0, appointment: 0, booked: 0, notice: 0, occupied: 0 };
     if (!activeProperty) return stats;
@@ -96,36 +103,46 @@ export default function App() {
       date: formData.get('actionDate') || "",
       time: formData.get('actionTime') || "",
       repairNote: formData.get('repairNote') || "",
-      refund: formData.get('refund') || "",
       deposit: formData.get('deposit') || "",
       balance: formData.get('balance') || "",
       updatedAt: Date.now()
     };
     
-    setSelectedRoom(null);
-    // บันทึกเข้า Cloud จริง
-    await setDoc(doc(db, 'apartments', appId, 'rooms', docId), data, { merge: true });
-    if (data.lastVisitor || data.repairNote) {
-      await addDoc(collection(db, 'apartments', appId, 'logs'), {
-        name: data.lastVisitor || "ระบบ", roomNo: selectedRoom, propertyName: activeProperty.name,
-        statusLabel: STATUS_CONFIG[tempStatus].label, createdAt: Date.now()
-      });
+    setSelectedRoom(null); // ปิดหน้าต่างทันที (Optimistic UI)
+
+    // บันทึกลง Cloud (Firestore)
+    try {
+      await setDoc(doc(db, 'apartments', appId, 'rooms', docId), data, { merge: true });
+      if (data.lastVisitor || data.repairNote) {
+        await addDoc(collection(db, 'apartments', appId, 'logs'), {
+          name: data.lastVisitor || "ระบบ", roomNo: selectedRoom, propertyName: activeProperty.name,
+          statusLabel: STATUS_CONFIG[tempStatus].label, createdAt: Date.now()
+        });
+      }
+    } catch (err) {
+      alert("บันทึกลง Cloud ไม่สำเร็จ กรุณาเช็คอินเทอร์เน็ต");
     }
   };
 
+  // ---------------------------------------------------------
+  // 🔒 หน้าจอ PIN (จะเด้งทุกครั้งที่เปิดแอป/รีเฟรช)
+  // ---------------------------------------------------------
   if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-['Prompt']">
-        <form onSubmit={(e) => { e.preventDefault(); if(pinInput === ACCESS_PIN){ setIsUnlocked(true); } else { alert('PIN ไม่ถูกต้อง'); setPinInput(""); } }} className="bg-white p-10 rounded-[3rem] w-full max-w-sm text-center space-y-6 shadow-2xl">
-          <Lock className="text-indigo-600 w-12 h-12 mx-auto"/>
+        <form onSubmit={(e) => { e.preventDefault(); if(pinInput === ACCESS_PIN){ setIsUnlocked(true); } else { alert('PIN ไม่ถูกต้อง'); setPinInput(""); } }} className="bg-white p-10 rounded-[3rem] w-full max-w-sm text-center space-y-6 shadow-2xl animate-in zoom-in">
+          <div className="w-16 h-16 bg-indigo-50 rounded-2xl flex items-center justify-center mx-auto"><Lock className="text-indigo-600 w-8 h-8"/></div>
           <h2 className="text-2xl font-black italic">ApartCloud PRO</h2>
-          <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} className="w-full p-4 bg-slate-100 rounded-2xl text-center text-3xl font-bold outline-none border-2 border-transparent focus:border-indigo-500" placeholder="PIN" autoFocus />
-          <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-lg">UNLOCK SYSTEM</button>
+          <input type="password" value={pinInput} onChange={e => setPinInput(e.target.value)} className="w-full p-4 bg-slate-100 rounded-2xl text-center text-3xl font-bold border-2 border-transparent focus:border-indigo-500 outline-none" placeholder="PIN" autoFocus />
+          <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-lg active:scale-95 transition-all">UNLOCK SYSTEM</button>
         </form>
       </div>
     );
   }
 
+  // ---------------------------------------------------------
+  // 🏠 หน้าจอหลัก (จะเห็นเมื่อปลดล็อก PIN แล้ว)
+  // ---------------------------------------------------------
   return (
     <div className="min-h-screen bg-slate-50 font-['Prompt'] pb-10">
       <nav className="bg-white border-b p-4 sticky top-0 z-40 flex justify-between items-center no-print shadow-sm">
@@ -141,11 +158,12 @@ export default function App() {
       <main className="p-4 max-w-7xl mx-auto space-y-6">
         {view === 'dashboard' ? (
           <>
+            {/* แถบสรุปสถานะแต่ละสีตามตึกที่เลือก */}
             <div className="grid grid-cols-2 md:grid-cols-6 gap-3 no-print">
               {Object.entries(STATUS_CONFIG).map(([k,v]) => (
                 <div key={k} className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
                   <div className={`w-8 h-8 rounded-xl ${v.color} flex items-center justify-center text-white mb-2 shadow-sm`}>{v.icon}</div>
-                  <p className="text-[10px] text-slate-400 font-black uppercase">{v.label}</p>
+                  <p className="text-[10px] text-slate-400 font-black uppercase tracking-tight">{v.label}</p>
                   <p className="text-2xl font-black text-slate-800">{dashboardStats[k]}</p>
                 </div>
               ))}
@@ -194,9 +212,9 @@ export default function App() {
                             {item.deposit && <p className="text-[10px] text-rose-500 font-black mt-2">จอง: ฿{item.deposit}</p>}
                             {item.balance && <p className="text-[10px] text-emerald-600 font-black">จ่ายวันเข้า: ฿{item.balance}</p>}
                           </div>
-                          <div className="text-right text-xs">
-                            <p className="font-black text-slate-800">{item.lastVisitor || '-'}</p>
-                            <p className="text-indigo-600 font-bold">{item.lastPhone}</p>
+                          <div className="text-right">
+                            <p className="font-black text-sm text-slate-800">{item.lastVisitor || '-'}</p>
+                            <p className="text-indigo-600 font-black text-xs">{item.lastPhone || '-'}</p>
                             <p className="text-[9px] text-slate-400 mt-2 font-bold">{item.date} {item.time}</p>
                           </div>
                         </div>
@@ -209,10 +227,10 @@ export default function App() {
         ) : (
           <div className="bg-white rounded-[2.5rem] shadow-sm border p-8 animate-in fade-in space-y-4">
             <h2 className="text-xl font-black uppercase flex items-center gap-2 italic text-slate-800"><ClipboardList/> Activity Logs</h2>
-            {visitorLogs.map(log => (
-              <div key={log.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center text-xs border border-slate-100">
-                <div><p className="font-bold">{log.roomNo} - {log.name}</p><p className="text-[9px] text-slate-400 font-black uppercase">{log.propertyName} • {log.statusLabel}</p></div>
-                <button onClick={() => deleteDoc(doc(db, 'apartments', appId, 'logs', log.id))} className="text-rose-400 p-2"><Trash2 className="w-4 h-4"/></button>
+            {visitorLogs.slice(0,100).map(log => (
+              <div key={log.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center font-bold border border-slate-100">
+                <div><p className="text-slate-800 text-sm">{log.roomNo} - {log.name}</p><p className="text-[9px] text-slate-400 uppercase font-black">{log.propertyName} • {log.statusLabel}</p></div>
+                <button onClick={() => deleteDoc(doc(db, 'apartments', appId, 'logs', log.id))} className="text-rose-400 p-2 hover:text-rose-600 transition-colors"><Trash2 className="w-4 h-4"/></button>
               </div>
             ))}
           </div>
@@ -245,8 +263,14 @@ export default function App() {
                   </div>
                   {tempStatus === 'booked' && (
                     <div className="grid grid-cols-2 gap-2">
-                       <input name="deposit" placeholder="มัดจำ/จอง" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.deposit || ""} className="p-4 rounded-xl font-black bg-rose-50 text-rose-600 outline-none border border-rose-100 shadow-sm" />
-                       <input name="balance" placeholder="จ่ายวันเข้า" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.balance || ""} className="p-4 rounded-xl font-black bg-emerald-50 text-emerald-600 outline-none border border-emerald-100 shadow-sm" />
+                       <input name="deposit" placeholder="มัดจำ/จอง" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.deposit || ""} className="p-4 rounded-xl font-black bg-rose-50 text-rose-600 outline-none border border-rose-100 placeholder:text-rose-300 shadow-sm" />
+                       <input name="balance" placeholder="จ่ายวันเข้า" defaultValue={roomStates[`${activePropertyId}_${selectedRoom}`]?.balance || ""} className="p-4 rounded-xl font-black bg-emerald-50 text-emerald-600 outline-none border border-emerald-100 placeholder:text-emerald-300 shadow-sm" />
+                    </div>
+                  )}
+                  {(tempStatus !== 'occupied') && (
+                    <div className="bg-indigo-600 p-4 rounded-2xl text-white space-y-1 shadow-lg">
+                      <p className="text-[9px] font-black opacity-70 flex items-center gap-1 uppercase tracking-widest"><CreditCard className="w-3 h-3"/> Bank Account</p>
+                      <p className="text-[11px] font-bold leading-tight">{activeProperty.bankInfo}</p>
                     </div>
                   )}
                 </>
